@@ -1,0 +1,29 @@
+NO RESTRICTIONS ON COPYING AND DISTRIBUTION
+
+The 'ForkMe' utilities, which includes the source and header files
+'ForkMe.c' and 'ForkMe.h' and all supporting files ('THE SOFTWARE'),
+as is the X11workbench and Toolkit software it was derived from, may
+be freely distributed  under the terms of the license restrictions
+covered by this document.
+
+LICENSE
+=======
+
+THE SOFTWARE itself is covered by a dual license.  You may choose one
+or the other, but not both (since they are usually not compatible with
+one another anyway).
+
+The two license choices are:
+  a) STANDARD GPL or LGPL LICENSE
+  b) BSD-style LICENSE
+
+Additionally, other copyrights may also apply, for code that may be
+considered to have been 'derived'.  These are currently displayed within
+the source code at the appropriate places, for reference.
+
+THIS SOFTWARE IS BEING PROVIDED AS-IS, WITH NO WARRANTY WHATSOEVER.  USE IT AT
+YOUR OWN RISK.  S.F.T. INC. CLAIMS NO RESPONSIBILITY FOR ANY ACTIONS OR CONSE-
+QUENCES THAT MAY ARISE FROM THE USE, ABUSE, OR DISTRIBUTION OF THIS SOFTWARE.
+
+For the actual license text, see LICENSE.
+
