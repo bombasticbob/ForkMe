@@ -125,7 +125,7 @@ int iLen;
 char *WBCopyStringN(const char *pSrc, unsigned int nMaxChars)
 {
 char *pDest;
-int iLen;
+unsigned int iLen;
 const char *p1;
 
   if(!pSrc || !*pSrc)
@@ -191,7 +191,7 @@ char *p2;
 
 void WBCatStringN(char **ppDest, const char *pSrc, unsigned int nMaxChars)
 {
-int iLen, iLen2;
+unsigned int iLen, iLen2;
 char *p2;
 const char *p3;
 
@@ -296,7 +296,10 @@ char * WBSearchPath(const char *szFileName)
 {
 char *pRval = NULL;
 const char *p1, *pCur, *pPath;
+#if 0
 char *p2;
+#endif // 0
+
 
   if(0 > WBStat(szFileName, NULL)) // file does not exist?
   {
@@ -391,12 +394,14 @@ no_stat:
 #endif // 0
       p1 = NULL; // prevents pointer re-use
 
+#if 0
       if(p2)
       {
         strcpy(pRval, p2);         // the path for X11workbench's install directory
         strcat(pRval, szFileName); // use path of X11workbench executable with szFileName
       }
       else // could not find, nor get path info
+#endif // 0
       {
         WBFree(pRval);
         pRval = NULL;
@@ -899,7 +904,7 @@ WB_PROCESS_ID idRval;
 WB_FILE_HANDLE hP[2]; // [0] is read end, [1] is write end
 char *p1, *p2, *pRval;
 int i1, i2, iStat, iRunning;
-unsigned int cbBuf;
+/*unsigned*/ int cbBuf;
 
 
   cbBuf = WBRUNRESULT_BUFFER_MINSIZE;
@@ -1133,7 +1138,7 @@ bad_file:
       return NULL;
     }
 
-    if(write(hIn, szStdInBuf, nLen) != nLen)
+    if(write(hIn, szStdInBuf, nLen) != (ssize_t)nLen)
     {
       close(hIn);
       goto bad_file;
@@ -1336,7 +1341,7 @@ int iFile;
       {
         iChunk = 1048576; // 1MByte at a time
 
-        if(iChunk > cbF)
+        if((size_t)iChunk > cbF)
         {
           iChunk = (int)cbF;
         }
@@ -1392,7 +1397,7 @@ int iFile, iRval, iChunk;
     // write chunks of 1Mb or size remaining
 
     iChunk = 1048576;
-    if(iChunk > cbBuf)
+    if((size_t)iChunk > cbBuf)
     {
       iChunk = (int)cbBuf;
     }

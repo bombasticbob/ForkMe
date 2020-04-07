@@ -47,7 +47,7 @@
 
 /** \brief process ID abastraction
 **/
-#define WB_PROCESS_ID unsigned int
+#define WB_PROCESS_ID pid_t
 
 /** \brief invalid file handle abstraction
 **/
