@@ -51,6 +51,9 @@
 #define WB_WARN_PRINT(X, ...)
 #endif // WB_WARN_PRINT
 
+// CONDITIONAL BUILD OPTIONS
+//#define NO_SHARED_LIB_SUPPORT /* when statically linking on Linux, you should enable this */
+
 
 // some basic utilities
 
@@ -1169,27 +1172,41 @@ bad_file:
 
 WB_MODULE WBLoadLibrary(const char * szModuleName)
 {
+#ifndef NO_SHARED_LIB_SUPPORT
   return((WB_MODULE)dlopen(szModuleName, RTLD_LAZY | RTLD_LOCAL));
+#else  // NO_SHARED_LIB_SUPPORT
+  return NULL;
+#endif // NO_SHARED_LIB_SUPPORT
 }
 
 void WBFreeLibrary(WB_MODULE hModule)
 {
+#ifndef NO_SHARED_LIB_SUPPORT
   dlclose(hModule);
+#endif // NO_SHARED_LIB_SUPPORT
 }
 
 WB_PROCADDRESS WBGetProcAddress(WB_MODULE hModule, const char *szProcName)
 {
+#ifndef NO_SHARED_LIB_SUPPORT
 // freebsd has the 'dlfunc' API, which is basically 'dlsym' cast to a function pointer
 #ifdef __FreeBSD__
   return((WB_PROCADDRESS)dlfunc(hModule, szProcName));
 #else // other POSIX systems - TODO, check for 'dlfunc' instead of the OS
   return((WB_PROCADDRESS)dlsym(hModule, szProcName));
 #endif // 'dlfunc' check
+#else  // NO_SHARED_LIB_SUPPORT
+  return NULL;
+#endif // NO_SHARED_LIB_SUPPORT
 }
 
 void * WBGetDataAddress(WB_MODULE hModule, const char *szDataName)
 {
+#ifndef NO_SHARED_LIB_SUPPORT
   return((void *)dlsym(hModule, szDataName));
+#else  // NO_SHARED_LIB_SUPPORT
+  return NULL;
+#endif // NO_SHARED_LIB_SUPPORT
 }
 
 
