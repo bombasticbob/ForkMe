@@ -53,9 +53,67 @@
 **/
 #define WB_INVALID_FILE_HANDLE -1
 
-/** \brief 'invalid handle' abstraction
+#ifndef WIN32 // WIN32 compat stuff
+/** \brief 'invalid handle' abstraction, Win32 source compatibility
 **/
 #define INVALID_HANDLE_VALUE -1
+
+/** \brief 'invalid process ID' abstraction, Win32 source compatibility
+  * NOTE: c++ only; for C use WB_PROCESS_ID_INVALID()
+**/
+#define WB_INVALID_PROCESS_ID  -1
+
+/** \brief test for invalid process ID
+**/
+#define WB_PROCESS_ID_INVALID(X) ((X) == WB_INVALID_PROCESS_ID)
+
+/** \brief 'invalid socket' abstraction, Win32 source compatibility
+**/
+#define INVALID_SOCKET -1
+
+/** \brief 'SOCKET' abstraction, Win32 source compatibility
+**/
+typedef int SOCKET;
+
+/** \brief 'close socket' abstraction, Win32 source compatibility
+**/
+#define closesocket(X) close(X) /* compatibility for Win32, call THIS to close a socket handle */
+
+#else // WIN32
+
+/** \brief invalid process ID abstraction
+  * NOTE: c++ only; for C use WB_PROCESS_ID_INVALID()
+**/
+#define WB_INVALID_PROCESS_ID  pidInvalid
+
+/** \brief test for invalid process ID
+**/
+#define WB_PROCESS_ID_INVALID(X) (!(X) || \
+                                  ((X)->uiProcessID == pidInvalid->uiProcessID \
+                                   && (X)->hProcess == pidInvalid->hProcess \
+                                   && (X)->iCachedExitCode == pidInvalid->iCachedExitCode))
+
+/** \brief 'Process ID' abstraction for Win32
+  * this structure is allocated and must be properly destroyed
+**/
+typedef struct __WB_PROCESS_ID
+{
+  UINT32 uiProcessID;
+  HANDLE hProcess; // so I can get exit code;
+  INT32 iCachedExitCode; // when process closes, store it here
+#ifdef __cplusplus
+  bool operator== (const struct __WB_PROCESS_ID &v2) const
+  {
+    return uiProcessID == v2.uiProcessID &&
+           hProcess == v2.hProcess &&
+           iCachedExitCode == v2.iCachedExitCode;
+  }
+#endif // __cplusplus
+} WB_PROCESS_ID;
+
+extern WB_PROCESS_ID pidInvalid;
+
+#endif // !WIN32
 
 
 #if defined(__GNUC__) || defined(__DOXYGEN__)
@@ -340,6 +398,42 @@ int WBGetProcessState(WB_PROCESS_ID idProcess, WB_INT32 *pExitCode);
   * Header File:  platform_helper.h
 **/
 char * WBRunResult(const char *szAppName, ...);
+
+/** \brief Run an application synchronously, returning 'stdout' output in a character buffer unless return code != 0
+  *
+  * \param szAppName A const pointer to a character string containing the path to the application
+  * \returns A WBAlloc() pointer to a buffer containing the 'stdout' output from the application, or NULL on error.
+  *
+  * Use this function to run an external process and capture its output.  This function will check the
+  * error return code from the program, returning NULL if it is non-zero.
+  *
+  * Each additional parameter passed to this function is a parameter that is to be passed to the program.
+  * The final parameter in the list must be NULL, so any call to this function will need to have at
+  * least 2 parameters.
+  * On error this function returns a NULL value.  Any non-NULL value must be 'free'd by the caller using WBFree().
+  *
+  * Header File:  platform_helper.h
+**/
+char * WBRunResult2(const char *szAppName, ...);
+
+/** \brief Run an application synchronously, supplying an input buffer and buffer length for 'stdin', and returning 'stdout' output in a character buffer.
+  *
+  * \param pStdin A const pointer to a binary buffer containing the input for piped data.
+  * \param cbStdin An integer containing the length of the buffer pointed to by 'pStdin'
+  * \param szAppName A const pointer to a character string containing the path to the application
+  * \returns A WBAlloc() pointer to a buffer containing the 'stdout' output from the application, or NULL on error.
+  *
+  * Use this function to run an external process and capture its output.  This function will check the
+  * error return code from the program, returning NULL if it is non-zero.
+  *
+  * Each additional parameter passed to this function is a parameter that is to be passed to the program.
+  * The final parameter in the list must be NULL, so any call to this function will need to have at
+  * least 2 parameters.
+  * On error this function returns a NULL value.  Any non-NULL value must be 'free'd by the caller using WBFree().
+  *
+  * Header File:  platform_helper.h
+**/
+char * WBRunResult3(const void * pStdin, int cbStdin, const char *szAppName, ...);
 
 /** \brief Run an application synchronously, supplying an input buffer for 'stdin', and returning 'stdout' output in a character buffer.
   *
@@ -810,6 +904,9 @@ WB_UINT32 WBInterlockedRead(volatile WB_UINT32 *pValue);
   *  A return value of zero indicates an empty file.
   *
   * Use this function to read the entire contents of a file into a memory buffer.
+  * If the file is a "character mode" file (like a /proc file) the size cannot be
+  ( determined ahead of time, so a 1Mb + 1 buffer is allocated and the file is
+  * read in small chunks, up to 1Mb or EOF. A zero byte is added to the end.
   *
   * header file:  file_help.h
 **/
