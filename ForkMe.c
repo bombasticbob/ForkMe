@@ -1825,30 +1825,47 @@ int iFile, bCharMode = 0;
     return (size_t)-1;
   }
 
-  iFile = open(szFileName, O_RDONLY); // open read only (assume no locking for now)
+#ifndef WIN32
+  if(!szFileName || !*szFileName) // use stdin
+    iFile = STDIN_FILENO; // fcntl(STDIN_FILENO,  F_DUPFD, 0);  // dup stdin handle so I can close it later
+  else
+#endif // WIN32
+    iFile = open(szFileName, O_RDONLY); // open read only (assume no locking for now)
 
   if(iFile < 0)
   {
     return (size_t)-1;
   }
 
-  // how long is my file?
 
-  cbLen = (unsigned long)lseek(iFile, 0, SEEK_END); // location of end of file
 
-  if(cbLen == (off_t)-1)
+#ifndef WIN32
+  if(!szFileName || !*szFileName) // use stdin
   {
-    *ppBuf = NULL; // make sure
-
-    if(errno == EINVAL) // char mode file like /proc var?
-    {
-      cbLen = (off_t)CHAR_MODE_BUFFSIZE;
-      bCharMode = 1;
-    }
+    cbLen = (off_t)CHAR_MODE_BUFFSIZE;
+    bCharMode = 1;
   }
   else
+#endif // WIN32
   {
-    lseek(iFile, 0, SEEK_SET); // back to beginning of file
+    // how long is my file?
+
+    cbLen = (unsigned long)lseek(iFile, 0, SEEK_END); // location of end of file
+
+    if(cbLen == (off_t)-1)
+    {
+      *ppBuf = NULL; // make sure
+
+      if(errno == EINVAL) // char mode file like /proc var?
+      {
+        cbLen = (off_t)CHAR_MODE_BUFFSIZE;
+        bCharMode = 1;
+      }
+    }
+    else
+    {
+      lseek(iFile, 0, SEEK_SET); // back to beginning of file
+    }
   }
 
   *ppBuf = pBuf = WBAlloc(cbLen + 1);
@@ -1916,7 +1933,10 @@ int iFile, bCharMode = 0;
   }
 
 
-  close(iFile);
+#ifndef WIN32
+  if(iFile != STDIN_FILENO)
+#endif // WIN32
+    close(iFile);
 
   return (size_t) cbLen;
 }
