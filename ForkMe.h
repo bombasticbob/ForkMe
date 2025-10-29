@@ -34,29 +34,46 @@
 
 #include <stdarg.h> /* stdarg to make sure I have va_list and other important stuff */
 #include <stdint.h> /* for standard integer types like uint32_t */
+#ifdef WIN32
+#ifndef MAXPATHLEN
+#define MAXPATHLEN MAX_PATH
+#endif // MAXPATHLEN
+#ifndef PATH_MAX
+#define PATH_MAX MAX_PATH
+#endif // PATH_MAX
+#ifndef MAME_MAX
+#define NAME_MAX MAX_PATH
+#endif // NAME_MAX
+#else // !WIN32
 #include <pthread.h> /* make sure this is included for POSIX */
+
+#ifndef MAX_PATH // WIN32 compat
+#define MAX_PATH PATH_MAX
+#endif // MAX_PATH
+#endif // WIN32
 
 
 /** \ingroup ForkMe
   * @{
 **/
 
-/** \brief file handle abstraction
-**/
-#define WB_FILE_HANDLE int
+#ifndef WIN32 // WIN32 compat stuff
 
 /** \brief process ID abastraction
 **/
 #define WB_PROCESS_ID pid_t
 
-/** \brief invalid file handle abstraction
+/** \brief file handle abstraction
 **/
-#define WB_INVALID_FILE_HANDLE -1
+#define WB_FILE_HANDLE int
 
-#ifndef WIN32 // WIN32 compat stuff
 /** \brief 'invalid handle' abstraction, Win32 source compatibility
 **/
 #define INVALID_HANDLE_VALUE -1
+
+/** \brief 'invalid file handle' abstraction
+**/
+#define WB_INVALID_FILE_HANDLE -1
 
 /** \brief 'invalid process ID' abstraction, Win32 source compatibility
   * NOTE: c++ only; for C use WB_PROCESS_ID_INVALID()
@@ -88,10 +105,10 @@ typedef int SOCKET;
 
 /** \brief test for invalid process ID
 **/
-#define WB_PROCESS_ID_INVALID(X) (!(X) || \
-                                  ((X)->uiProcessID == pidInvalid->uiProcessID \
-                                   && (X)->hProcess == pidInvalid->hProcess \
-                                   && (X)->iCachedExitCode == pidInvalid->iCachedExitCode))
+#define WB_PROCESS_ID_INVALID(X) (&(X) == &pidInvalid || \
+                                  ((X).uiProcessID == pidInvalid.uiProcessID \
+                                   && (X).hProcess == pidInvalid.hProcess \
+                                   && (X).iCachedExitCode == pidInvalid.iCachedExitCode))
 
 /** \brief 'Process ID' abstraction for Win32
   * this structure is allocated and must be properly destroyed
@@ -112,6 +129,14 @@ typedef struct __WB_PROCESS_ID
 } WB_PROCESS_ID;
 
 extern WB_PROCESS_ID pidInvalid;
+
+/** \brief file handle abstraction
+**/
+#define WB_FILE_HANDLE HANDLE
+
+/** \brief 'invalid file handle' abstraction
+**/
+#define WB_INVALID_FILE_HANDLE INVALID_HANDLE_VALUE
 
 #endif // !WIN32
 
@@ -191,6 +216,19 @@ typedef long long WB_INT64;
 **/
 typedef unsigned long long WB_UINT64;
 
+/** \brief Platform abstract 64-bit integer time
+  *
+  * This definition identifies the data type for a 64-bit integer time, avoiding the Y2K38 problem
+**/
+#if defined(WIN32) && _USE_32BIT_TIME_T && !defined(__DOXYGEN__)
+typedef long long WB_TIME;
+#elif __SIZEOF_LONG__ <= 4 /* 32-bit OS */ && !defined(__DOXYGEN__)
+typedef long long WB_TIME;
+#else // 64-bit and compatible to 64-bit time_t
+typedef time_t WB_TIME;
+#endif // 32-bit vs 64-bit time_t
+
+
 #if defined(__LP64__) || defined(__DOXYGEN__)
 /** \brief Platform abstract integer pointer
   *
@@ -203,6 +241,60 @@ typedef WB_UINT32 WB_UINTPTR;
 typedef WB_UINT64 WB_UINTPTR;
 #endif // __LP64__
 
+#ifdef WIN32
+/** \brief MODULE HANDLE equivalent
+  *
+  * This 'typedef' refers to a MODULE
+**/
+typedef HMODULE WB_MODULE;
+
+/** \brief THREAD HANDLE equivalent
+  *
+  * This 'typedef' refers to a THREAD
+**/
+typedef DWORD WB_THREAD;
+
+/** \brief THREADPROC equivalent
+  *
+  * This 'typedef' refers to the entry function prototype for a thread entry point
+**/
+typedef void *(*WB_THREAD_PROC)(void *pParam);
+//typedef DWORD (WINAPI *WB_THREAD_PROC)( LPVOID lpParam );
+
+/** \brief PROC ADDRESS equivalent
+  *
+  * This 'typedef' refers to a PROC ADDRESS as exported from a shared library
+**/
+typedef FARPROC WB_PROCADDRESS;
+
+/** \brief THREAD LOCAL STORAGE 'key' equivalent
+  *
+  * This 'typedef' refers to a THREAD LOCAL STORAGE key, identifying a storage slot
+**/
+typedef DWORD WB_THREAD_KEY;
+
+/** \brief CONDITION HANDLE equivalent (similar to an 'event')
+  *
+  * This 'typedef' refers to a CONDITION, a triggerable synchronization resource
+**/
+typedef WB_UINT32 WB_COND; // defined as 'WB_UINT32' because of pthread_cond problems under Linux - man pthread
+//typedef pthread_cond_t  WB_COND;
+
+/** \brief MUTEX HANDLE equivalent
+  *
+  * This 'typedef' refers to a MUTEX, a lockable synchronization object
+**/
+typedef HANDLE WB_MUTEX;
+
+/** \brief MODULE HANDLE equivalent
+  *
+  * This 'typedef' refers to a MODULE
+**/
+
+#define WB_INVALID_THREAD ((WB_THREAD)-1)
+
+#else // !WIN32 aka POSIX
+
 /** \brief MODULE HANDLE equivalent
   *
   * This 'typedef' refers to a MODULE
@@ -214,6 +306,12 @@ typedef void * WB_MODULE;
   * This 'typedef' refers to a THREAD
 **/
 typedef pthread_t WB_THREAD;
+
+/** \brief THREADPRIOC equivalent
+  *
+  * This 'typedef' refers to the entry function prototype for a thread entry point
+**/
+typedef void *(*WB_THREAD_PROC)(void *pParam);
 
 /** \brief PROC ADDRESS equivalent
   *
@@ -240,47 +338,20 @@ typedef WB_UINT32 WB_COND; // defined as 'WB_UINT32' because of pthread_cond pro
 **/
 typedef pthread_mutex_t WB_MUTEX;
 
-/** \brief MODULE HANDLE equivalent
-  *
-  * This 'typedef' refers to a MODULE
-**/
-typedef void * WB_MODULE;
+#define WB_INVALID_THREAD ((WB_THREAD)-1)
 
-/** \brief THREAD HANDLE equivalent
-  *
-  * This 'typedef' refers to a THREAD
-**/
-typedef pthread_t WB_THREAD;
-
-/** \brief PROC ADDRESS equivalent
-  *
-  * This 'typedef' refers to a PROC ADDRESS as exported from a shared library
-**/
-typedef void (* WB_PROCADDRESS)(void);
-
-/** \brief THREAD LOCAL STORAGE 'key' equivalent
-  *
-  * This 'typedef' refers to a THREAD LOCAL STORAGE key, identifying a storage slot
-**/
-typedef pthread_key_t   WB_THREAD_KEY;
-
-/** \brief CONDITION HANDLE equivalent (similar to an 'event')
-  *
-  * This 'typedef' refers to a CONDITION, a triggerable synchronization resource
-**/
-typedef WB_UINT32 WB_COND; // defined as 'WB_UINT32' because of pthread_cond problems under Linux
-//typedef pthread_cond_t  WB_COND;
-
-/** \brief MUTEX HANDLE equivalent
-  *
-  * This 'typedef' refers to a MUTEX, a lockable synchronization object
-**/
-typedef pthread_mutex_t WB_MUTEX;
+#endif // WIN32,POSIX
 
 
 typedef char * WB_PSTR;         ///< pointer to char string - a convenience typedef
 typedef const char * WB_PCSTR;  ///< pointer to const char string - a convenience typedef
 
+
+/** \brief Get System Time
+  *
+  * returns current 'UNIX time' in seconds
+**/
+WB_TIME WBGetSystemTime(void);
 
 /** \brief Get Time Index
   *
@@ -663,7 +734,7 @@ WB_THREAD WBThreadGetCurrent(void);
   *
   * Header File:  platform_helper.h
 **/
-WB_THREAD WBThreadCreate(void *(*function)(void *), void *pParam);
+WB_THREAD WBThreadCreate(WB_THREAD_PROC function, void *pParam);
 
 /** \brief Wait for a specified threat to exit
   *

@@ -15,27 +15,41 @@
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 
+#ifdef WIN32
+#define _CRT_SECURE_NO_WARNINGS /* need POSIX compat without complaints */
+#include <Windows.h>
+#endif // WIN32
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <signal.h>
 #include <time.h>
-#include <limits.h>
 //#include <math.h>
-#include <sys/time.h>
+#ifdef WIN32
+#include <io.h>
+#include <tchar.h>
+#include <process.h>
+#else // WIN32
+#include <pthread.h>
+#include <unistd.h>
+#include <signal.h>
+#include <limits.h>
 #include <dlfcn.h> /* dynamic library support */
 #include <dirent.h>
 #include <fnmatch.h>
 #include <sys/wait.h>
+#include <sys/time.h>
+#include <sys/param.h> // for MAXPATHLEN and PATH_MAX (also includes limits.h in some cases)
+#endif // WIN32
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/param.h> // for MAXPATHLEN and PATH_MAX (also includes limits.h in some cases)
 
 #include "ForkMe.h"
+
+#ifndef WIN32
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif // WIN32
 
 // some defines - use 'malloc' and 'free' as-is
 
@@ -43,7 +57,15 @@
 #define WBReAlloc(X,Y) realloc(X,Y)
 #define WBFree(X) free(X)
 
-// turn off the basic debug stuff
+#ifdef NO_DEBUG
+#define WB_ERROR_PRINT(X, ...) { }
+#define WB_WARN_PRINT(X, ...)  { }
+
+#ifdef DEBUG_STDERR_TO_STDOUT
+#undef DEBUG_STDERR_TO_STDOUT
+#endif // DEBUG_STDERR_TO_STDOUT
+#else // NO_DEBUG
+// basic debug stuff
 #ifndef WB_ERROR_PRINT
 void error_message(const char *szFormat, ...);
 //#define WB_ERROR_PRINT(X, ...)
@@ -54,6 +76,12 @@ void warning_message(const char *szFormat, ...);
 #define WB_WARN_PRINT warning_message
 //#define WB_WARN_PRINT(X, ...)
 #endif // WB_WARN_PRINT
+
+///////////////////////////
+// TEMPORARY DEBUG DEFINES
+//#define DEBUG_STDERR_TO_STDOUT
+
+#endif // NO_DEBUG
 
 // CONDITIONAL BUILD OPTIONS
 #define NO_SHARED_LIB_SUPPORT /* when statically linking on Linux, you should enable this */
@@ -66,19 +94,164 @@ WB_PROCESS_ID pidInvalid = { 0, INVALID_HANDLE_VALUE, 0 };
 
 
 // some basic utilities
+#define FOUR_HUNDRED_YEARS (400 * 365 + 24 * 4 + 1)
+static int  total_days[13]={0,31,59,90,120,151,181,212,243,273,304,334,365};
+static int  total_leap[13]={0,31,60,91,121,152,182,213,244,274,305,335,366};
+static WB_TIME epoch_time = 25568; // 1900-based date offset from epoch
+
+WB_TIME WBGetSystemTime(void)
+{
+#if defined(WIN32)
+#ifdef _USE_32BIT_TIME_T /* see time.h */
+#error you must not use 32-bit time_t value, use 64-bit only
+#endif // _USE_32BIT_TIME_T
+SYSTEMTIME st;
+int64_t l1;
+int n_years;
+long adjustment;
+
+
+   GetSystemTime(&st);
+
+    // convert to days since 1/1/1970
+
+   n_years = st.wYear - 1900;    /* # of years since 1900 */
+   adjustment = 0;
+
+   while(n_years<0)
+   {
+      n_years += 400;                       /* add 400 years */
+      adjustment -= FOUR_HUNDRED_YEARS;    /* number of days in 400 years */
+   }
+
+   while(n_years >=400)
+   {
+      n_years -= 400;
+      adjustment += FOUR_HUNDRED_YEARS;
+   }
+      /*    CALCULATE THE TOTAL NUMBER OF DAYS UP TO 1/1 THIS YEAR    */
+      /* terms:  # of days + # of "Feb/29"s - # of non-leap centuries */
+
+   l1 = 365L * n_years + ((n_years > 4)?((n_years - 1) >> 2):0)
+        + ((n_years > 100)?(1 - (n_years - 1)/ 100):0);
+
+   if(((st.wYear % 400)==0 || (st.wYear % 100)!=0) && (st.wYear % 4)==0)
+      l1 += total_leap[st.wMonth - 1];    /* month-to-date totals (leap year) */
+   else
+      l1 += total_days[st.wMonth - 1];    /* month-to-date totals */
+
+   l1 += st.wDay + adjustment; // days since 1/1/1900 (a '1')
+
+   // convert to days since epoch (1/1/1970, a '1')
+   l1 -= epoch_time;
+
+   // convert to seconds (00:00:00 AM UTC)
+   l1 *= 86400;
+
+   return (WB_TIME)l1;
+#elif __SIZEOF_LONG__ <= 4 // !WIN32, 32-bit time_t
+#ifndef NO_DEBUG
+#warning 32-bit time_t is only valid until 2038 - use 64-bit OS to avoid Y2K38
+#endif
+//
+// TODO - rewrite this to avoid Y2K38, by getting year, month, day etc. and converting like for WIN32
+struct timeval tv;
+
+  gettimeofday(&tv, NULL); // for now, just use this.
+
+  return (WB_TIME)tv.tv_sec;
+#else // 64-bit time_t, !WIN32
+struct timeval tv;
+
+  gettimeofday(&tv, NULL);
+
+  return (WB_TIME)tv.tv_sec;
+#endif // WIN32
+}
 
 WB_UINT64 WBGetTimeIndex(void)
 {
+#ifdef WIN32
+SYSTEMTIME st;
+int64_t l1;
+int n_years;
+long adjustment;
+
+
+   GetSystemTime(&st);
+
+    // convert to days since 1/1/1970
+
+   n_years = st.wYear - 1900;    /* # of years since 1900 */
+   adjustment = 0;
+
+   while(n_years<0)
+   {
+      n_years += 400;                       /* add 400 years */
+      adjustment -= FOUR_HUNDRED_YEARS;    /* number of days in 400 years */
+   }
+
+   while(n_years >=400)
+   {
+      n_years -= 400;
+      adjustment += FOUR_HUNDRED_YEARS;
+   }
+      /*    CALCULATE THE TOTAL NUMBER OF DAYS UP TO 1/1 THIS YEAR    */
+      /* terms:  # of days + # of "Feb/29"s - # of non-leap centuries */
+
+   l1 = 365L * n_years + ((n_years > 4)?((n_years - 1) >> 2):0)
+        + ((n_years > 100)?(1 - (n_years - 1)/ 100):0);
+
+   if(((st.wYear % 400)==0 || (st.wYear % 100)!=0) && (st.wYear % 4)==0)
+      l1 += total_leap[st.wMonth - 1];    /* month-to-date totals (leap year) */
+   else
+      l1 += total_days[st.wMonth - 1];    /* month-to-date totals */
+
+   l1 += st.wDay + adjustment; // days since 1/1/1900 (a '1')
+
+   // convert to days since epoch (1/1/1970, a '1')
+   l1 -= epoch_time;
+
+   // convert to seconds (00:00:00 AM UTC)
+   l1 *= 86400;
+
+   // adjust for UTC time
+   l1 += st.wHour * 3600L + st.wMinute * 60L + st.wSecond;
+
+   // conver to mucroseconds
+   l1 *= 1000000L;
+
+   // add milliseconds from 'st' a microseconds
+   l1 += st.wMilliseconds * 1000L;
+
+   return (WB_UINT64)l1;
+#elif __SIZEOF_LONG__ <= 4 // !WIN32, 32-bit time_t
+//
+// TODO - rewrite this to avoid Y2K38, by getting year, month, day etc. and converting like for WIN32
+struct timeval tv;
+
+  gettimeofday(&tv, NULL); // for now, just use this.
+
+  return (WB_UINT64)tv.tv_sec * (WB_UINT64)1000000
+         + (WB_UINT64)tv.tv_usec;
+#else // 64-bit time_t, !WIN32
 struct timeval tv;
 
   gettimeofday(&tv, NULL);
 
   return (WB_UINT64)tv.tv_sec * (WB_UINT64)1000000
          + (WB_UINT64)tv.tv_usec;
+#endif // WIN32
 }
 
 void WBDelay(uint32_t uiDelay)  // approximate delay for specified period (in microseconds).  may be interruptible
 {
+#ifdef WIN32
+  if(uiDelay <= 1000)
+    Sleep(1);
+  else
+    Sleep(uiDelay / 1000);
+#else // WIN32
 //#ifdef HAVE_NANOSLEEP
 struct timespec tsp;
 
@@ -101,6 +274,7 @@ struct timespec tsp;
 //  usleep(uiDelay);  // 100 microsecs - a POSIX alternative to 'nanosleep'
 //
 //#endif // HAVE_NANOSLEEP
+#endif // WIN32
 }
 
 
@@ -251,7 +425,7 @@ const char *p3;
 //        to be handled separately
 int WBMkDir(const char *szFileName, int flags)
 {
-int iRval;
+int iRval = -1;
 
   if(!szFileName || !*szFileName)
   {
@@ -259,7 +433,11 @@ int iRval;
   }
 
 #ifdef WIN32
-#error not yet implemented
+//#error not yet implemented
+  iRval = !CreateDirectory(szFileName, NULL)   // TODO assign 'flags' for security?
+        ? 0 : GetLastError();
+
+  _chmod(szFileName, flags);  // attempt it
 #else // WIN32
 
   if(szFileName[0] == '/' && !szFileName[1])
@@ -329,6 +507,41 @@ no_stat:
 
     if(pRval)
     {
+#ifdef WIN32
+      int cb1 = SearchPath(NULL, szFileName, NULL, PATH_MAX, pRval,(TCHAR **)&p1);
+
+      if(cb1 > 0)
+      {
+        pRval[cb1] = 0;
+      }
+      else
+      {
+        free(pRval);
+        pRval = WBCopyString(szFileName);
+      }
+
+      if(pRval && !WBStat(pRval, NULL))
+      {
+        // this function returns non-zero if file not found
+        if(0 > WBStat(pRval, NULL))
+        {
+          if(pRval)
+          {
+            free(pRval);
+          }
+
+          goto no_stat;
+        }
+
+        return pRval; // FOUND!
+      }
+
+      if(pRval)
+      {
+        free(pRval);
+        pRval = NULL;
+      }
+#else // WIN32
       pPath = getenv("PATH"); // not malloc'd, but should not modify
       if(pPath)
       {
@@ -429,6 +642,7 @@ no_stat:
       }
 
       goto no_stat;
+#endif // WIN32
     }
   }
   else
@@ -455,8 +669,12 @@ static const char szH[16]="0123456789ABCDEF";
 
 
 #ifdef WIN32
-  // TODO:  the windows code, which uses the TEMP and TMP environment variables as well as the registry
-#error windows version not implemented
+char szTemp[MAX_PATH + 1];
+
+  GetEnvironmentVariable("TEMP", szTemp, MAX_PATH);
+
+  szDir = szTemp;
+
 #else // !WIN32
 
   // On POSIX systems, first use /var/tmp and if not available, use /tmp
@@ -518,11 +736,18 @@ static const char szH[16]="0123456789ABCDEF";
     if(pRval)
     {
 #ifdef WIN32
-#error windows code not written yet
+      h1 = CreateFile(pRval, GENERIC_READ|GENERIC_WRITE, 0,
+                      NULL, // security descriptor - 0644 mode???
+                      CREATE_ALWAYS,
+                      /*FILE_ATTRIBUTE_TEMPORARY |*/ FILE_ATTRIBUTE_NORMAL,
+                      NULL);
 #else // !WIN32
       h1 = open(pRval, O_CREAT | O_EXCL | O_RDWR, 0644); // create file, using '644' permissions, fail if exists
+      if(h1 < 0)
+        h1 = INVALID_HANDLE_VALUE;
+#endif // !WIN32
 
-      if(h1 < 0) // error
+      if(h1 == INVALID_HANDLE_VALUE) // error
       {
         WBFree(pRval);
         pRval = NULL;
@@ -542,14 +767,17 @@ static const char szH[16]="0123456789ABCDEF";
       }
       else
       {
+#ifdef WIN32
+        CloseHandle(h1);
+#else  // !WIN32
         close(h1);
+#endif // !WIN32
 
         // add this file to the existing list of temp files to be destroyed
         // on exit from the program.
 
         break; // file name is valid and ready for use
       }
-#endif // !WIN32
     }
   }
 
@@ -604,6 +832,9 @@ WB_FILE_HANDLE hIn, hOut, hErr;
 
   pAppName = WBSearchPath(szAppName);
 
+  if(!pAppName)
+    return WB_INVALID_PROCESS_ID;
+
   if(hStdIn == WB_INVALID_FILE_HANDLE) // re-dir to/from /dev/null
   {
 #ifndef WIN32
@@ -622,7 +853,7 @@ WB_FILE_HANDLE hIn, hOut, hErr;
       sa.bInheritHandle = TRUE; // what a pain
 
       hIn = CreateFile("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                       &sa, OPEN_EXISTING, NULL, NULL);
+                       &sa, OPEN_EXISTING, 0, NULL);
       WBFree(pSD);
     }
 #endif // WIN32
@@ -659,7 +890,7 @@ WB_FILE_HANDLE hIn, hOut, hErr;
       sa.bInheritHandle = TRUE; // what a pain
 
       hOut = CreateFile("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        &sa, OPEN_EXISTING, NULL, NULL);
+                        &sa, OPEN_EXISTING, 0, NULL);
       WBFree(pSD);
     }
 #endif // WIN32
@@ -683,21 +914,35 @@ WB_FILE_HANDLE hIn, hOut, hErr;
 #ifndef WIN32
     hErr = open("/dev/null", O_WRONLY, 0);
 #else // WIN32
-    SECURITY_DESCRIPTOR *pSD = (SECURITY_DESCRIPTOR *)WBAlloc(SECURITY_DESCRIPTOR_MIN_LENGTH);
-
-    if(pSD)
+#ifdef DEBUG_STDERR_TO_STDOUT
+    if(hStdOut != WB_INVALID_FILE_HANDLE)
     {
-      SECURITY_ATTRIBUTES sa;
+      if(!DuplicateHandle(GetCurrentProcess(), hStdOut,
+                          GetCurrentProcess(), &hErr, GENERIC_WRITE,
+                          TRUE, 0))
+      {
+        hErr = WB_INVALID_FILE_HANDLE;
+      }
+    }
+    else
+#endif // DEBUG_STDERR_TO_STDOUT
+    {
+      SECURITY_DESCRIPTOR *pSD = (SECURITY_DESCRIPTOR *)WBAlloc(SECURITY_DESCRIPTOR_MIN_LENGTH);
 
-      InitializeSecurityDescriptor(pSD,SECURITY_DESCRIPTOR_REVISION);
+      if(pSD)
+      {
+        SECURITY_ATTRIBUTES sa;
 
-      sa.nLength = sizeof(sa);
-      sa.lpSecurityDescriptor = pSD;
-      sa.bInheritHandle = TRUE; // what a pain
+        InitializeSecurityDescriptor(pSD,SECURITY_DESCRIPTOR_REVISION);
 
-      hErr = CreateFile("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        &sa, OPEN_EXISTING, NULL, NULL);
-      WBFree(pSD);
+        sa.nLength = sizeof(sa);
+        sa.lpSecurityDescriptor = pSD;
+        sa.bInheritHandle = TRUE; // what a pain
+
+        hErr = CreateFile("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                          &sa, OPEN_EXISTING, 0, NULL);
+        WBFree(pSD);
+      }
     }
 #endif // WIN32
   }
@@ -753,7 +998,7 @@ WB_FILE_HANDLE hIn, hOut, hErr;
       WBFree(pAppName);
     }
 
-    return WB_INVALID_FILE_HANDLE;
+    return WB_INVALID_PROCESS_ID;
   }
 
 #ifdef WIN32
@@ -771,18 +1016,21 @@ WB_FILE_HANDLE hIn, hOut, hErr;
   // make sure it is hidden
   si.wShowWindow = SW_HIDE;
 
-
+#if 1
   // get application name from path
 
   p1 = _tcsrchr((TCHAR *)pAppName, '\\');
   if(p1)
   {
-    pCur = CopyString(p1 + 1); // just the name
+    pCur = WBCopyString(p1 + 1); // just the name
   }
   else
   {
-    pCur = CopyString(pAppName);
+    pCur = WBCopyString(pAppName);
   }
+#else // 0,1
+  pCur = WBCopyString(""); // need non-null pointer
+#endif // 0
 
   // build the command line
 
@@ -794,12 +1042,30 @@ WB_FILE_HANDLE hIn, hOut, hErr;
       break;
     }
 
-    CatString(&pCur, _T(" "));
-    CatString(&pCur, pArg); // caller must add quotes as needed
+    WBCatString(&pCur, _T(" "));
+
+    // if the parameter contains a space, windows requires quotes.
+    if(strchr(pArg, ' '))
+    {
+      if(strchr(pArg, '"'))
+      {
+        WBCatString(&pCur, "'");
+        WBCatString(&pCur, pArg); // caller must add quotes as needed
+        WBCatString(&pCur, "'");
+      }
+      else
+      {
+        WBCatString(&pCur, "\"");
+        WBCatString(&pCur, pArg); // caller must add quotes as needed
+        WBCatString(&pCur, "\"");
+      }
+    }
+    else
+      WBCatString(&pCur, pArg); // caller must add quotes as needed
   }
 
   if(CreateProcess(pAppName, pCur, NULL, NULL, TRUE, NORMAL_PRIORITY_CLASS,
-                    NULL, NULL, &si, &pi))  // it worked?
+                   NULL, NULL, &si, &pi))  // it worked?
   {
       // wait for process to complete before continuing...
 
@@ -812,7 +1078,7 @@ WB_FILE_HANDLE hIn, hOut, hErr;
   }
   else
   {
-    hRval = INVALID_PROCESS_ID;
+    hRval = WB_INVALID_PROCESS_ID;
   }
 
   free(pCur);
@@ -961,7 +1227,7 @@ va_list va;
 
   va_end(va);
 
-  if(idRval == WB_INVALID_FILE_HANDLE)
+  if(WB_PROCESS_ID_INVALID(idRval))
   {
     WB_ERROR_PRINT("Unable to run '%s'\n", szAppName);
   }
@@ -1146,7 +1412,7 @@ check_pipe_no_data_avail:
     {
       // for waitpid(), if WNOHANG is specified and there are no stopped, continued or exited children, 0 is returned
 
-      if(GetProcessState(idRval, pExitCode) <= 0) // ended or error
+      if(WBGetProcessState(idRval, pExitCode) <= 0) // ended or error
       {
         iRunning = 0; // my flag that it's not running
       }
@@ -1405,7 +1671,9 @@ struct __RunResult3_worker_thread_params *pParams = (struct __RunResult3_worker_
       if(!WriteFile(pParams->hStdin[1], p1, i2, &cb1, NULL))
       {
         DWORD dwErr;
+#if 0
 check_pipe_io_error:
+#endif // 0
 
         dwErr = GetLastError();
 
@@ -1478,7 +1746,7 @@ struct __RunResult3_worker_thread_params xParams = {{INVALID_HANDLE_VALUE,INVALI
                                            &xParams, 0,//CREATE_SUSPENDED,
                                            (unsigned int *)&xParams.dwThreadID);
 
-  if(xParams.hThread == WB_INVALID_HANDLE_VALUE)
+  if(xParams.hThread == INVALID_HANDLE_VALUE)
   {
 //    WB_ERROR_PRINT("* ERROR * - unable to create thread, %d (%x) (a)\n",
 //                   GetLastError(), GetLastError());
@@ -1490,7 +1758,7 @@ struct __RunResult3_worker_thread_params xParams = {{INVALID_HANDLE_VALUE,INVALI
 
   //ResumeThread(xParams.hThread);
 
-  pRval = RunResultInternal(xParams.hStdin[0], &nExitCode, szAppName, va);
+  pRval = WBRunResultInternal(xParams.hStdin[0], &nExitCode, szAppName, va);
 
   // wait for worker thread close
 
@@ -1500,7 +1768,12 @@ struct __RunResult3_worker_thread_params xParams = {{INVALID_HANDLE_VALUE,INVALI
     {
       char tbuf[1024];
       _sntprintf(tbuf, sizeof(tbuf), "%s ended with error code %d\n", szAppName, nExitCode);
-      ::MessageBox(NULL, tbuf, "** EXTERNAL APPLICATION ERROR **", MB_OK |  MB_ICONERROR);
+#ifdef __cplusplus
+      ::MessageBox
+#else // __cplusplus
+      MessageBox
+#endif // __cplusplus
+        (NULL, tbuf, "** EXTERNAL APPLICATION ERROR **", MB_OK |  MB_ICONERROR);
       OutputDebugString(pRval);
     }
 #endif _DEBUG
@@ -1603,6 +1876,9 @@ char *WBRunResultWithInput(const char *szStdInBuf, const char *szAppName, ...)
 {
 char *pRval, *pTemp = NULL;
 va_list va;
+#ifdef WIN32
+DWORD cb1;
+#endif // WIN32
 WB_FILE_HANDLE hIn = WB_INVALID_FILE_HANDLE;
 
 
@@ -1622,12 +1898,21 @@ WB_FILE_HANDLE hIn = WB_INVALID_FILE_HANDLE;
       return NULL;
     }
 
+#ifdef WIN32
+    hIn = CreateFile(pTemp, GENERIC_READ|GENERIC_WRITE,0,NULL,
+                     OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+#else // WIN32
     hIn = open(pTemp, O_RDWR, 0);
+#endif // WIN32
 
     if(hIn < 0)
     {
 bad_file:
+#ifdef WIN32
+      DeleteFile(pTemp);
+#else // WIN32
       unlink(pTemp);
+#endif // WIN32
       WBFree(pTemp);
 
 //      WB_ERROR_PRINT("TEMPORARY:  %s HERE I AM (2)\n", __FUNCTION__);
@@ -1636,13 +1921,28 @@ bad_file:
       return NULL;
     }
 
-    if(write(hIn, szStdInBuf, nLen) != (ssize_t)nLen)
+    if(
+#ifdef WIN32
+       !WriteFile(hIn, szStdInBuf, nLen, &cb1,NULL)
+        || cb1 != nLen
+#else // WIN32
+       write(hIn, szStdInBuf, nLen) != (ssize_t)nLen
+#endif // WIN32
+       )
     {
+#ifdef WIN32
+      CloseHandle(hIn);
+#else // WIN32
       close(hIn);
+#endif // WIN32
       goto bad_file;
     }
 
+#ifdef WIN32
+    SetFilePointer(hIn, 0, NULL, FILE_BEGIN);
+#else // WIN32
     lseek(hIn, 0, SEEK_SET); // rewind file
+#endif // WIN32
 
 //    WB_ERROR_PRINT("TEMPORARY:  %s HERE I AM (3) temp file \"%s\"\n", __FUNCTION__, pTemp);
   }
@@ -1653,8 +1953,12 @@ bad_file:
 
   if(pTemp)
   {
+#ifdef WIN32
+      DeleteFile(pTemp);
+#else // WIN32
     close(hIn);
     unlink(pTemp);
+#endif // WIN32
 
     WBFree(pTemp);
   }
@@ -1667,22 +1971,33 @@ bad_file:
 
 WB_MODULE WBLoadLibrary(const char * szModuleName)
 {
+#ifdef WIN32
+  return LoadLibrary(szModuleName);
+#else // !WIN32 aka POSIX
 #ifndef NO_SHARED_LIB_SUPPORT
   return((WB_MODULE)dlopen(szModuleName, RTLD_LAZY | RTLD_LOCAL));
 #else  // NO_SHARED_LIB_SUPPORT
   return NULL;
 #endif // NO_SHARED_LIB_SUPPORT
+#endif // WIN3,POSIX
 }
 
 void WBFreeLibrary(WB_MODULE hModule)
 {
+#ifdef WIN32
+  FreeLibrary(hModule);
+#else // !WIN32 aka POSIX
 #ifndef NO_SHARED_LIB_SUPPORT
   dlclose(hModule);
 #endif // NO_SHARED_LIB_SUPPORT
+#endif // WIN32,POSIX
 }
 
 WB_PROCADDRESS WBGetProcAddress(WB_MODULE hModule, const char *szProcName)
 {
+#ifdef WIN32
+  return GetProcAddress(hModule, szProcName);
+#else // !WIN32 aka POSIX
 #ifndef NO_SHARED_LIB_SUPPORT
 // freebsd has the 'dlfunc' API, which is basically 'dlsym' cast to a function pointer
 #ifdef __FreeBSD__
@@ -1693,15 +2008,20 @@ WB_PROCADDRESS WBGetProcAddress(WB_MODULE hModule, const char *szProcName)
 #else  // NO_SHARED_LIB_SUPPORT
   return NULL;
 #endif // NO_SHARED_LIB_SUPPORT
+#endif // WIN32,POSIX
 }
 
 void * WBGetDataAddress(WB_MODULE hModule, const char *szDataName)
 {
+#ifdef WIN32
+  return (void *)GetProcAddress(hModule, szDataName);
+#else // !WIN32 aka POSIX
 #ifndef NO_SHARED_LIB_SUPPORT
   return((void *)dlsym(hModule, szDataName));
 #else  // NO_SHARED_LIB_SUPPORT
   return NULL;
 #endif // NO_SHARED_LIB_SUPPORT
+#endif // WIN32,POSIX
 }
 
 
@@ -1709,6 +2029,9 @@ void * WBGetDataAddress(WB_MODULE hModule, const char *szDataName)
 
 WB_THREAD_KEY WBThreadAllocLocal(void)
 {
+#ifdef WIN32
+  return TlsAlloc();
+#else // !WIN32 aka POSIX
 WB_THREAD_KEY keyRval;
   if(!pthread_key_create(&keyRval, NULL))
   {
@@ -1716,34 +2039,98 @@ WB_THREAD_KEY keyRval;
   }
 
   return (WB_THREAD_KEY)INVALID_HANDLE_VALUE;
+#endif // WIN32,POSIX
 }
 
 void WBThreadFreeLocal(WB_THREAD_KEY keyVal)
 {
+#ifdef WIN32
+  TlsFree(keyVal);
+#else // !WIN32 aka POSIX
   pthread_key_delete(keyVal); // TODO:  check return?
+#endif // WIN32,POSIX
 }
 
 void * WBThreadGetLocal(WB_THREAD_KEY keyVal)
 {
+#ifdef WIN32
+  return TlsGetValue(keyVal);
+#else // !WIN32 aka POSIX
   return pthread_getspecific(keyVal);
+#endif // WIN32,POSIX
 }
 
 void WBThreadSetLocal(WB_THREAD_KEY keyVal, void *pValue)
 {
+#ifdef WIN32
+  TlsSetValue(keyVal, pValue);
+#else // !WIN32 aka POSIX
   pthread_setspecific(keyVal, pValue);
+#endif // WIN32,POSIX
 }
 
 WB_THREAD WBThreadGetCurrent(void)
 {
+#ifdef WIN32
+  return GetCurrentThreadId();
+#else // !WIN32 aka POSIX
   return pthread_self();
+#endif // WIN32,POSIX
 }
 
 
-
-
-WB_THREAD WBThreadCreate(void *(*function)(void *), void *pParam)
+#ifdef WIN32
+struct WB_THREAD_PROC_PARAM
 {
-  WB_THREAD thrdRval = (WB_THREAD)INVALID_HANDLE_VALUE;
+  WB_THREAD_PROC pFunction;
+  void *pParam;
+  volatile HANDLE hThread; // becomes NULL as a flag
+};
+
+DWORD WINAPI W32ThreadCaller(void *pParam0)
+{
+WB_THREAD_PROC pFunction;
+void *pParam;
+HANDLE hThread; // handle to me
+struct WB_THREAD_PROC_PARAM *pP = (struct WB_THREAD_PROC_PARAM *)pParam0;
+DWORD dwRval;
+
+  pFunction = pP->pFunction;
+  pParam = pP->pParam;
+  hThread = pP->hThread;
+
+  pP->hThread = NULL; // flag to creator
+
+  dwRval = (DWORD)pFunction(pParam);  // do the thread
+
+  CloseHandle(hThread);
+
+  return dwRval;
+}
+#endif // WIN32
+
+WB_THREAD WBThreadCreate(WB_THREAD_PROC function, void *pParam)
+{
+  WB_THREAD thrdRval = WB_INVALID_THREAD;
+#ifdef WIN32
+  struct WB_THREAD_PROC_PARAM pp;
+  pp.pFunction = function;
+  pp.pParam = pParam;
+
+  // CreateThread returns a handle
+  // consider calling _beginthreadex and using a wrapper to call _endthreadex
+  pp.hThread = CreateThread(NULL, 0, W32ThreadCaller, &pp, CREATE_SUSPENDED, &thrdRval);
+
+  if(pp.hThread) // returns NULL on error
+  {
+    ResumeThread(pp.hThread);  // thread proc wrapper closes it
+
+    while(pp.hThread) // assigned 0 when safe for this function to return
+      Sleep(0); // this should happen quickly
+
+    return thrdRval;
+  }
+#else // !WIN32 aka POSIX
 
   // TODO:  call my own thread startup proc, passing a struct that contains
   //        'function' and 'pParam' as the param.  use a linked list of
@@ -1754,12 +2141,27 @@ WB_THREAD WBThreadCreate(void *(*function)(void *), void *pParam)
   {
     return thrdRval;
   }
+#endif // WIN32,POSIX
 
-  return (WB_THREAD)INVALID_HANDLE_VALUE;
+  return WB_INVALID_THREAD;
 }
 
 void *WBThreadWait(WB_THREAD hThread)        // closes hThread, returns exit code, waits for thread to terminate (blocks)
 {
+#ifdef WIN32
+  HANDLE hT = OpenThread(READ_CONTROL|SYNCHRONIZE,FALSE,hThread);
+  if(hT)
+  {
+    DWORD dwR;
+    WaitForSingleObject(hT, INFINITE);
+
+    GetExitCodeThread(hT, &dwR);
+    CloseHandle(hT);
+    return (void *)dwR;
+  }
+
+  return NULL;
+#else // !WIN32 aka POSIX
 void *pRval = NULL;
 
   if(pthread_join(hThread, &pRval))
@@ -1769,11 +2171,30 @@ void *pRval = NULL;
   }
 
   return pRval;
+#endif // WIN32,POSIX
 }
 
 int WBThreadRunning(WB_THREAD hThread)        // >0 if thread is running, <0 error - use 'pthread_kill(thread,0)' which returns ESRCH if terminated i.e. 'PS_DEAD'
 {
-  int iR = pthread_kill(hThread,0);
+int iR = -1;
+#ifdef WIN32
+  // use 'WaitForSingleObject with 0 timeout
+  HANDLE hT = OpenThread(READ_CONTROL|SYNCHRONIZE,FALSE,hThread);
+  if(hT)
+  {
+    DWORD dwR = WaitForSingleObject(hT, 0);
+    if(dwR == WAIT_TIMEOUT)
+      iR = 1;
+    else if(dwR == WAIT_OBJECT_0)
+      iR = 0;
+    else
+      iR = -1;
+
+    CloseHandle(hT);
+  }
+  return iR;
+#else // !WIN32 aka POSIX
+  iR = pthread_kill(hThread,0);
 
   if(!iR)
   {
@@ -1786,16 +2207,23 @@ int WBThreadRunning(WB_THREAD hThread)        // >0 if thread is running, <0 err
   }
 
   return -1;
+#endif // WIN32,POSIX
 }
 
 void WBThreadExit(void *pRval)
 {
+#ifdef WIN32
+#else // !WIN32 aka POSIX
   pthread_exit(pRval);
+#endif // WIN32,POSIX
 }
 
 void WBThreadClose(WB_THREAD hThread)
 {
+#ifdef WIN32
+#else // !WIN32 aka POSIX
   pthread_detach(hThread);
+#endif // WIN32,POSIX
 }
 
 
@@ -1812,9 +2240,14 @@ size_t WBReadFileIntoBuffer(const char *szFileName, char **ppBuf)
 {
 off_t cbLen = (off_t)-1;
 size_t cbF;
-int cb1, iChunk;
+int iChunk;
+#ifdef WIN32
+DWORD cb1;
+#else // WIN32
+int cb1, bCharMode = 0;
+#endif // WIN32
 char *pBuf;
-int iFile, bCharMode = 0;
+WB_FILE_HANDLE hFile;
 
 
   // if the file cannot be "seek"d I use char mode but limit to 1Mb
@@ -1825,47 +2258,49 @@ int iFile, bCharMode = 0;
     return (size_t)-1;
   }
 
-#ifndef WIN32
-  if(!szFileName || !*szFileName) // use stdin
-    iFile = STDIN_FILENO; // fcntl(STDIN_FILENO,  F_DUPFD, 0);  // dup stdin handle so I can close it later
-  else
-#endif // WIN32
-    iFile = open(szFileName, O_RDONLY); // open read only (assume no locking for now)
+#ifdef WIN32
+  hFile = CreateFile(szFileName,GENERIC_READ,0,NULL,OPEN_EXISTING,0,NULL);
 
-  if(iFile < 0)
+  if(hFile == INVALID_HANDLE_VALUE)
+#else // WIN32
+  hFile = open(szFileName, O_RDONLY); // open read only (assume no locking for now)
+
+  if(hFile < 0)
+#endif // WIN32
   {
     return (size_t)-1;
   }
 
+  // how long is my file?
 
+#ifdef WIN32
+  cbLen = (unsigned long)SetFilePointer(hFile, 0, NULL, FILE_END); // location of end of file
+#else // WIN32
+  cbLen = (unsigned long)lseek(hFile, 0, SEEK_END); // location of end of file
+#endif // WIN32
 
-#ifndef WIN32
-  if(!szFileName || !*szFileName) // use stdin
+  if(cbLen == (off_t)-1)
   {
-    cbLen = (off_t)CHAR_MODE_BUFFSIZE;
-    bCharMode = 1;
+#ifdef WIN32
+    CloseHandle(hFile);
+    return (size_t)-1;
+#else // WIN32
+    *ppBuf = NULL; // make sure
+
+    if(errno == EINVAL) // char mode file like /proc var?
+    {
+      cbLen = (off_t)CHAR_MODE_BUFFSIZE;
+      bCharMode = 1;
+    }
+#endif // WIN32
   }
   else
-#endif // WIN32
   {
-    // how long is my file?
-
-    cbLen = (unsigned long)lseek(iFile, 0, SEEK_END); // location of end of file
-
-    if(cbLen == (off_t)-1)
-    {
-      *ppBuf = NULL; // make sure
-
-      if(errno == EINVAL) // char mode file like /proc var?
-      {
-        cbLen = (off_t)CHAR_MODE_BUFFSIZE;
-        bCharMode = 1;
-      }
-    }
-    else
-    {
-      lseek(iFile, 0, SEEK_SET); // back to beginning of file
-    }
+#ifdef WIN32
+    SetFilePointer(hFile, 0, NULL, FILE_BEGIN); // location of end of file
+#else // WIN32
+    lseek(hFile, 0, SEEK_SET); // back to beginning of file
+#endif // WIN32
   }
 
   *ppBuf = pBuf = WBAlloc(cbLen + 1);
@@ -1879,11 +2314,16 @@ int iFile, bCharMode = 0;
     *pBuf = 0;
     cbF = cbLen;
 
+#ifndef WIN32
     if(bCharMode)
       cbLen = 0;
+#endif // WIN32
 
     while(cbF > 0)
     {
+#ifdef WIN32
+      iChunk = 1048576; // 1MByte at a time
+#else // WIN32
       if(bCharMode)
       {
         iChunk = 16;
@@ -1892,21 +2332,29 @@ int iFile, bCharMode = 0;
       {
         iChunk = 1048576; // 1MByte at a time
       }
+#endif // WIN32
 
       if((size_t)iChunk > cbF)
       {
         iChunk = (int)cbF;
       }
 
-      cb1 = read(iFile, pBuf, iChunk);
+#ifdef WIN32
+      if(ReadFile(hFile, pBuf, iChunk, &cb1, NULL))
+        cb1 = -1;
+#else // WIN32
+      cb1 = read(hFile, pBuf, iChunk);
+#endif // WIN32
 
       if(cb1 == -1)
       {
+#ifndef WIN32
         if(errno == EAGAIN) // allow this
         {
           WBDelay(100);
           continue; // for now just do this
         }
+#endif // WIN32
 
         cbLen = -1;
         break;
@@ -1925,25 +2373,32 @@ int iFile, bCharMode = 0;
       pBuf += iChunk;
       *pBuf = 0;  // I allocated an extra byte for this
 
+#ifndef WIN32
       if(bCharMode)
       {
         cbLen += iChunk;  // reported length in char mode
       }
+#endif // WIN32
     }
   }
 
 
-#ifndef WIN32
-  if(iFile != STDIN_FILENO)
+#ifdef WIN32
+  CloseHandle(hFile);
+#else // WIN32
+  close(hFile);
 #endif // WIN32
-    close(iFile);
 
   return (size_t) cbLen;
 }
 
 int WBWriteFileFromBuffer(const char *szFileName, const char *pBuf, size_t cbBuf)
 {
-int iFile, iRval, iChunk;
+WB_FILE_HANDLE hFile;
+int iRval, iChunk;
+#ifdef WIN32
+DWORD cb1;
+#endif // WIN32
 
 
   if(!pBuf)
@@ -1951,9 +2406,15 @@ int iFile, iRval, iChunk;
     return -1;
   }
 
-  iFile = open(szFileName, O_CREAT | O_TRUNC | O_RDWR, 0666);  // always create with mode '666' (umask should apply)
+#ifdef WIN32
+  hFile = CreateFile(szFileName, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
-  if(iFile < 0)
+  if(hFile == INVALID_HANDLE_VALUE)
+#else // WIN32
+  hFile = open(szFileName, O_CREAT | O_TRUNC | O_RDWR, 0666);  // always create with mode '666' (umask should apply)
+
+  if(hFile < 0)
+#endif // WIN32
   {
     return -1;
   }
@@ -1968,7 +2429,14 @@ int iFile, iRval, iChunk;
       iChunk = (int)cbBuf;
     }
 
-    iRval = write(iFile, pBuf, iChunk);
+#ifdef WIN32
+    if(WriteFile(hFile, pBuf, iChunk, &cb1, NULL))
+      iRval = -1;
+    else
+      iRval = cb1;
+#else // WIN32
+    iRval = write(hFile, pBuf, iChunk);
+#endif // WIN32
 
     if(iRval < 0)
     {
@@ -1981,7 +2449,11 @@ int iFile, iRval, iChunk;
         continue; // try again
       }
 
-      close(iFile);
+#ifdef WIN32
+      CloseHandle(hFile);
+#else // WIN32
+      close(hFile);
+#endif // WIN32
       return -1; // error
     }
     else if(iRval != iChunk) // TODO:  allow this??
@@ -1996,13 +2468,20 @@ int iFile, iRval, iChunk;
 
   iRval = 0; // at this point, success!
 
-  close(iFile);
+#ifdef WIN32
+  CloseHandle(hFile);
+#else // WIN32
+  close(hFile);
+#endif // WIN32
 
   return iRval;
 }
 
 int WBReplicateFilePermissions(const char *szProto, const char *szTarget)
 {
+#ifdef WIN32
+  return -1; // just fail for now
+#else // WIN32
 struct stat sb;
 int iRval = 0;
 
@@ -2032,16 +2511,23 @@ int iRval = 0;
   }
 
   return iRval;
+#endif // WIN32
 }
 
 char *WBGetCurrentDirectory(void)
 {
 char *pRval = WBAlloc(MAXPATHLEN + 2);
-int i1;
+int i1, cDirSep;
 
   if(pRval)
   {
+#ifdef WIN32
+    cDirSep = '\\';
+    if(!GetCurrentDirectory(MAXPATHLEN + 1, pRval))
+#else // WIN32
+    cDirSep = '/';
     if(!getcwd(pRval, MAXPATHLEN))
+#endif // WIN32
     {
       WBFree(pRval);
       pRval = NULL;
@@ -2054,9 +2540,9 @@ int i1;
   {
     i1 = strlen(pRval);
 
-    if(i1 > 0 && pRval[i1 - 1] != '/')
+    if(i1 > 0 && pRval[i1 - 1] != cDirSep)
     {
-      pRval[i1] = '/';
+      pRval[i1] = cDirSep;
       pRval[i1 + 1] = 0;
     }
   }
@@ -2071,15 +2557,25 @@ int bRval = 0;
 struct stat sF;
 
   if(!stat(szFileName, &sF)) // NOTE:  'stat' returns info about symlink targets, not the link itself
+#ifdef WIN32
+    bRval = (sF.st_mode & _S_IFDIR) ? 1 : 0;
+#else // WIN32
     bRval = S_ISDIR(sF.st_mode);
+#endif // WIN32
 
   return(bRval);
 }
 
 char *WBGetCanonicalPath(const char *szFileName)
 {
-char *pTemp, *p1, *p2, *p3, *p4, *pRval = NULL;
+char *pTemp, *p1, *p2, *p3, *pRval = NULL;
+#ifdef WIN32
+char cDirSep = '\\';
+#else // WIN32
+char cDirSep = '/';
+char *p4;
 struct stat sF;
+#endif // WIN32
 
   pTemp = WBCopyString(szFileName);
 
@@ -2091,13 +2587,19 @@ struct stat sF;
   // step 1:  eliminate // /./
 
   p1 = pTemp;
+#ifdef WIN32
+  if(*p1 == cDirSep && p1[1] == cDirSep) // UNC path
+    p1 += 2;
+  else if(*p1 && *p1 != cDirSep && p1[1] == ':') // drive letter
+    p1 += 2;
+#endif // WIN32
   while(*p1 && p1[1])
   {
-    if(*p1 == '/' && p1[1] == '/')
+    if(*p1 == cDirSep && p1[1] == cDirSep)
     {
       memmove(p1, p1 + 1, strlen(p1 + 1) + 1);
     }
-    else if(*p1 == '/' && p1[1] == '.' && p1[2] == '/')
+    else if(*p1 == cDirSep && p1[1] == '.' && p1[2] == cDirSep)
     {
       memmove(p1, p1 + 2, strlen(p1 + 2) + 1);
     }
@@ -2109,9 +2611,48 @@ struct stat sF;
 
   // step 2:  resolve each portion of the path, deal with '~' '.' '..', build new path.
 
-  if(*pTemp == '~' && (pTemp[1] == '/' || !pTemp[1])) // first look for '~' at the beginning (only allowed there)
+  if(*pTemp == '~' && (pTemp[1] == cDirSep || !pTemp[1])) // first look for '~' at the beginning (only allowed there)
   {
-    p1 = getenv("HOME");
+    p1 = WBCopyString(getenv("HOME"));
+    if(!p1 || !*p1)
+    {
+      if(p1)
+        free(p1);
+
+      p1 = WBCopyString(getenv("HOMEDRIVE"));
+      p2 = WBCopyString(getenv("HOMEPATH"));
+
+      if(p1 && !*p1)
+      {
+        free(p1);
+        p1 = NULL;
+      }
+
+      if(p2 && !*p2)
+      {
+        free(p2);
+        p2 = NULL;
+      }
+
+      if(!p1 && p2)
+      {
+        p1 = p2;
+        p2 = NULL;
+      }
+      else if(p1)
+      {
+        p3 = WBCopyString(p1);
+        if(p2)
+        {
+          WBCatString(&p3, p2);
+          free(p2);
+        }
+
+        free(p1);
+        p1 = p3;
+      }
+    }
+
     if(!p1 || !*p1) // no home directory?
     {
       *pTemp = '.';  // for now change it to '.'
@@ -2125,13 +2666,18 @@ struct stat sF;
         return NULL;
       }
 
-      if(p3[strlen(p3) - 1] != '/')
+      if(p3[strlen(p3) - 1] != cDirSep)
       {
-        WBCatString(&p3, "/");
+        char bb[2];
+
+        bb[0] = cDirSep;
+        bb[1] = 0;
+
+        WBCatString(&p3, bb);
       }
 
       p2 = pTemp + 1;
-      if(*p2 == '/')
+      if(*p2 == cDirSep)
       {
         p2++; // already have an ending / on the path
       }
@@ -2147,10 +2693,11 @@ struct stat sF;
   }
 
   p1 = pTemp;
+
   while(*p1)
   {
-    p2 = strchr(p1, '/');
-    if(!p2)
+    p2 = strchr(p1, cDirSep);
+    if(!p2)      // no more '/'
     {
       if(*p1 == '.') // check for ending in '.' or '..' and add a '/' so I can handle it correctly
       {
@@ -2182,9 +2729,40 @@ struct stat sF;
 
       break;
     }
-    else if(p2 == p1)
+    else if(p1 == p2   // from the root
+#ifdef WIN32
+            || (p2 == p1 + 2 && p1[1] == ':') // not a drive
+#endif // WIN32
+           )
     {
-      pRval = WBCopyString("/");
+      char bb[4];
+
+#ifdef WIN32
+      if(p2 > p1)
+      {
+        bb[0] = p1[0];    // drive letter
+        bb[1] = p1[1];
+        bb[2] = cDirSep;
+        bb[3] = 0;
+      }
+      else if(p1[1] == cDirSep) // UNC
+      {
+        bb[0] = cDirSep;  // root dir
+        bb[1] = cDirSep;  // root dir
+        bb[2] = 0;
+        p2++;    // advance to network name next time
+      }
+      else
+      {
+        bb[0] = cDirSep;  // root dir
+        bb[1] = 0;
+      }
+#else // WIN32
+      bb[0] = cDirSep;
+      bb[1] = 0;
+#endif // WIN32
+
+      pRval = WBCopyString(bb);
     }
     else
     {
@@ -2212,7 +2790,7 @@ struct stat sF;
         p3 = pRval + strlen(pRval) - 1; // NOTE:  pRval ends in '/' and I want the one BEFORE that
         while(p3 > pRval)
         {
-          if(*(p3 - 1) == '/')
+          if(*(p3 - 1) == cDirSep)
           {
             *p3 = 0;
             break;
@@ -2223,7 +2801,8 @@ struct stat sF;
 
         if(p3 <= pRval) // did not find a preceding '/' - this is an error
         {
-          WB_ERROR_PRINT("%s:%d - did not find preceding '/' - %s\n", __FUNCTION__, __LINE__, pRval);
+          WB_ERROR_PRINT("%s:%d - did not find preceding '%c' - %s\n",
+                         __FUNCTION__, __LINE__, cDirSep, pRval);
 
           WBFree(pRval);
           pRval = NULL;
@@ -2244,6 +2823,7 @@ struct stat sF;
         break;
       }
 
+#ifndef WIN32
       // see if this is a symbolic link.  exclude testing '/'
 
       p3 = pRval + strlen(pRval) - 1;
@@ -2338,11 +2918,13 @@ struct stat sF;
           }
         }
       }
+#endif // WIN32
     }
 
     p1 = p2 + 1;
   }
 
+#ifndef WIN32
   // if the resulting path is a symbolic link, fix it
   if(pRval)
   {
@@ -2425,6 +3007,7 @@ struct stat sF;
       }
     }
   }
+#endif // WIN32
 
   if(pTemp)
   {
@@ -2440,11 +3023,95 @@ struct stat sF;
   return pRval;
 }
 
+
+char *WBGetSymLinkTarget(const char *szFileName)
+{
+#ifdef WIN32
+    return NULL;  // fail it
+#else // WIN32
+char *pRval = WBAlloc(MAXPATHLEN + 2);
+
+  if(pRval)
+  {
+    int iLen = readlink(szFileName, pRval, MAXPATHLEN);
+    if(iLen <= 0)
+    {
+      WBFree(pRval);
+      return NULL;
+    }
+
+    pRval[iLen] = 0; // assume < MAXPATHLEN for now...
+  }
+
+  return pRval;
+#endif // WIN32
+}
+
+int WBStat(const char *szLinkName, unsigned long *pdwModeAttrReturn)
+{
+int iRval;
+struct stat sF;
+
+
+  iRval = stat(szLinkName, &sF);
+  if(!iRval && pdwModeAttrReturn)
+  {
+    *pdwModeAttrReturn = sF.st_mode;
+  }
+
+  return iRval; // zero on success (i.e. file exists)
+}
+
+unsigned long long WBGetFileModDateTime(const char *szFileName)
+{
+int iRval;
+struct stat sF;
+
+
+  iRval = stat(szFileName, &sF);
+
+  if(iRval)
+  {
+    return (unsigned long long)((long long)-1);
+  }
+
+  // TODO:  see whether st_mtime or st_ctime is larger, in case of total screwup by something else
+
+  return sF.st_mtime; // mod time (as UNIX time_t value)
+}
+
+int WBCheckFileModDateTime(const char *szFileName, unsigned long long tVal)
+{
+unsigned long long tNewVal;
+
+
+  tNewVal = WBGetFileModDateTime(szFileName);
+
+  if(tNewVal == (unsigned long long)((unsigned long)-1)
+     || tNewVal > tVal)
+  {
+    return 1;
+  }
+  else if(tNewVal < tVal)
+  {
+    return -1;
+  }
+  else
+  {
+    return 0;
+  }
+}
+
+
 // reading directories in a system-independent way
 
 typedef struct __DIRLIST__
 {
   const char *szPath, *szNameSpec;
+#ifdef WIN32
+  HANDLE hD;
+  WIN32_FIND_DATA wfd;
+#else // WIN32
   DIR *hD;
   struct stat sF;
   union
@@ -2453,14 +3120,25 @@ typedef struct __DIRLIST__
     struct dirent de;
   };
 // actual composite 'search name' follows
+#endif // WIN32
 } DIRLIST;
+
 
 void *WBAllocDirectoryList(const char *szDirSpec)
 {
 DIRLIST *pRval;
-char *p1, *p2;
+char *p1, *p2, cDirSep;
+#ifdef WIN32
+#endif // WIN32
 int iLen, nMaxLen;
 char *pBuf;
+char tbuf[MAX_PATH * 2];
+
+#ifdef WIN32
+    cDirSep = '\\';
+#else // WIN32
+    cDirSep = '/';
+#endif // WIN32
 
   if(!szDirSpec || !*szDirSpec)
   {
@@ -2470,6 +3148,9 @@ char *pBuf;
 
   iLen = strlen(szDirSpec);
   nMaxLen = iLen + 32;
+#ifdef WIN32
+  nMaxLen += MAX_PATH;
+#endif // WIN32
 
   pBuf = WBAlloc(nMaxLen);
   if(!pBuf)
@@ -2478,14 +3159,37 @@ char *pBuf;
     return NULL;
   }
 
-  if(szDirSpec[0] == '/') // path starts from the root
+  if((szDirSpec[0] == cDirSep // path starts from the root
+#ifdef WIN32
+      && szDirSpec[0] == cDirSep) ||
+     ((szDirSpec[0] >= 'A' && szDirSpec[0] <= 'Z' ||
+       szDirSpec[0] >= 'a' && szDirSpec[0] <= 'z') &&
+      szDirSpec[1] == ':'
+#endif // WIN32
+    ))
   {
     memcpy(pBuf, szDirSpec, iLen + 1);
   }
+#ifdef WIN32
+  else if(szDirSpec[0] == cDirSep) // path starts from the root, no drive letter
+  {
+    GetCurrentDirectory(sizeof(tbuf)-1, tbuf);
+    if(tbuf[0] && tbuf[1] == ':' && tbuf[2] == cDirSep)
+    {
+      pBuf[0] = tbuf[0];
+      pBuf[1] = ':';
+
+      memcpy(pBuf + 2, szDirSpec, iLen + 1);
+      iLen += 2;
+    }
+    else
+      memcpy(pBuf, szDirSpec, iLen + 1);
+  }
+#endif // WIN32
   else // for now, force a path of './' to be prepended to path spec
   {
     pBuf[0] = '.';
-    pBuf[1] = '/';
+    pBuf[1] = cDirSep;
 
     memcpy(pBuf + 2, szDirSpec, iLen + 1);
     iLen += 2;
@@ -2493,7 +3197,7 @@ char *pBuf;
 
   // do a reverse scan until I find a '/'
   p1 = ((char *)pBuf) + iLen;
-  while(p1 > pBuf && *(p1 - 1) != '/')
+  while(p1 > pBuf && *(p1 - 1) != cDirSep)
   {
     p1--;
   }
@@ -2505,7 +3209,7 @@ char *pBuf;
     // found, and p1 points PAST the '/'.  See if it ends in '/' or if there are wildcards present
     if(!*p1) // name ends in '/'
     {
-      if(p1 == (pBuf + 1) && *pBuf == '/') // root dir
+      if(p1 == (pBuf + 1) && *pBuf == cDirSep) // root dir
       {
         p1++;
       }
@@ -2515,11 +3219,17 @@ char *pBuf;
       }
 
       p1[0] = '*';
+#ifdef WIN32
+      p1[1] = '.';
+      p1[2] = '*';
+      p1[3] = 0;
+#else // WIN32
       p1[1] = 0;
+#endif // WIN32
     }
     else if(strchr(p1, '*') || strchr(p1, '?'))
     {
-      if(p1 == (pBuf + 1) && *pBuf == '/') // root dir
+      if(p1 == (pBuf + 1) && *pBuf == cDirSep) // root dir
       {
         memmove(p1 + 1, p1, strlen(p1) + 1);
         *(p1++) = 0; // after this, p1 points to the file spec
@@ -2536,7 +3246,13 @@ char *pBuf;
       p1 += strlen(p1);
       *(p1++) = 0; // end of path (would be '/')
       p1[0] = '*';
+#ifdef WIN32
+      p1[1] = '.';
+      p1[2] = '*';
+      p1[3] = 0;
+#else // WIN32
       p1[1] = 0;
+#endif // WIN32
     }
     else
     {
@@ -2561,7 +3277,13 @@ char *pBuf;
       p1 = (char *)pBuf + iLen;
       *(p1++) = 0; // end of path (would be '/')
       p1[0] = '*';
+#ifdef WIN32
+      p1[1] = '.';
+      p1[2] = '*';
+      p1[3] = 0;
+#else // WIN32
       p1[1] = 0;
+#endif // WIN32
     }
   }
 
@@ -2572,18 +3294,27 @@ char *pBuf;
     pRval->szPath = pBuf;
     pRval->szNameSpec = p1;
 
-    p2 = (char *)(pRval + 1);
+    p2 = (char *)(pRval + 1);   // cache for dir + spec
     strcpy(p2, pBuf);
     p2 += strlen(p2);
-    *(p2++) = '/';
+    *(p2++) = cDirSep;
     strcpy(p2, p1);
-    p1 = (char *)(pRval + 1);
+    p1 = (char *)(pRval + 1);// complete assembled path spec
+
+#ifdef WIN32
+    memset(&pRval->wfd, 0, sizeof(pRval->wfd));
+    pRval->hD = FindFirstFile(p1, &pRval->wfd);
+
+    if(pRval->hD == INVALID_HANDLE_VALUE &&
+       GetLastError() != ERROR_FILE_NOT_FOUND)  // can happen if there are no files to upload
+#else // WIN32
 
     pRval->hD = opendir(pBuf);
 
 //    WB_ERROR_PRINT("TEMPORARY - opendir for %s returns %p\n", pBuf, pRval->hD);
 
     if(pRval->hD == NULL)
+#endif // WIN32
     {
       WB_WARN_PRINT("WARNING - %s - Unable to open dir \"%s\", errno=%d\n", __FUNCTION__, pBuf, errno);
 
@@ -2608,10 +3339,14 @@ void WBDestroyDirectoryList(void *pDirectoryList)
   {
     DIRLIST *pD = (DIRLIST *)pDirectoryList;
 
+#ifdef WIN32
+    if(pD->hD != INVALID_HANDLE_VALUE)
+      FindClose(pD->hD);
+#else // WIN32
     if(pD->hD)
-    {
       closedir(pD->hD);
-    }
+#endif // WIN32
+
     if(pD->szPath)
     {
       WBFree((void *)(pD->szPath));
@@ -2620,6 +3355,85 @@ void WBDestroyDirectoryList(void *pDirectoryList)
     WBFree(pDirectoryList);
   }
 }
+
+
+#ifdef WIN32
+
+int WBNextDirectoryEntry(void *pDirectoryList, char *szNameReturn,
+                         int cbNameReturn, unsigned long *pdwModeAttrReturn)
+{
+struct stat sF;
+char *p1, *pBuf;
+//static char *p2; // temporary
+int iRval = 1;  // default 'EOF'
+DIRLIST *pDL = (DIRLIST *)pDirectoryList;
+
+
+  if(!pDirectoryList)
+  {
+    return -1;
+  }
+
+  // TODO:  improve this, maybe cache buffer or string length...
+  pBuf = WBAlloc(strlen(pDL->szPath) + 8 + NAME_MAX);
+
+  if(!pBuf)
+  {
+    return -2;
+  }
+
+  strcpy(pBuf, pDL->szPath);
+  p1 = pBuf + strlen(pBuf);
+  if(p1 > pBuf && *(p1 - 1) != '\\') // it does not already end in /
+  {
+    *(p1++) = '\\';  // for now assume this
+    *p1 = 0;  // by convention
+  }
+
+  if(!pDL->wfd.cFileName[0])
+  {
+    goto exit_point;    // none left
+  }
+
+  iRval = 0;
+
+  strncpy(p1, pDL->wfd.cFileName, NAME_MAX + 4);
+
+  if(szNameReturn && cbNameReturn > 0)
+  {
+    strncpy(szNameReturn, p1, cbNameReturn);  // just the name
+  }
+
+  if(pdwModeAttrReturn)
+  {
+    *pdwModeAttrReturn = 0;
+    if(WBStat(szNameReturn, pdwModeAttrReturn))
+    {
+      WB_WARN_PRINT("%s: can't 'stat' %s, errno=%d (%08xH)\n", __FUNCTION__, pBuf, errno, errno);
+    }
+  }
+
+  if(pDL->hD != INVALID_HANDLE_VALUE)
+  {
+    if(!FindNextFile(pDL->hD, &pDL->wfd))
+    {
+      FindClose(pDL->hD);
+      pDL->hD = INVALID_HANDLE_VALUE;
+      memset(&pDL->wfd, 0, sizeof(pDL->wfd));
+    }
+  }
+
+exit_point:
+  if(pBuf)
+  {
+    WBFree(pBuf);
+  }
+
+  return iRval;
+
+}
+
+#else // WIN32
 
 // returns < 0 on error, > 0 on EOF, 0 for "found something"
 
@@ -2712,6 +3526,9 @@ DIRLIST *pDL = (DIRLIST *)pDirectoryList;
 
 }
 
+#endif // WIN32
+
+
 char *WBGetDirectoryListFileFullPath(const void *pDirectoryList, const char *szFileName)
 {
 char *pRval, *pBuf, *p1;
@@ -2750,30 +3567,11 @@ DIRLIST *pDL = (DIRLIST *)pDirectoryList;
 
   if(szFileName)
   {
-    strcpy(p1, szFileName);
+    strcpy(p1, szFileName); // already checked buffer
   }
 
   pRval = WBGetCanonicalPath(pBuf);
   WBFree(pBuf);
-
-  return pRval;
-}
-
-char *WBGetSymLinkTarget(const char *szFileName)
-{
-char *pRval = WBAlloc(MAXPATHLEN + 2);
-
-  if(pRval)
-  {
-    int iLen = readlink(szFileName, pRval, MAXPATHLEN);
-    if(iLen <= 0)
-    {
-      WBFree(pRval);
-      return NULL;
-    }
-
-    pRval[iLen] = 0; // assume < MAXPATHLEN for now...
-  }
 
   return pRval;
 }
@@ -2795,21 +3593,6 @@ char *pTemp, *pRval;
   return pRval;
 }
 
-int WBStat(const char *szLinkName, unsigned long *pdwModeAttrReturn)
-{
-int iRval;
-struct stat sF;
-
-
-  iRval = stat(szLinkName, &sF);
-  if(!iRval && pdwModeAttrReturn)
-  {
-    *pdwModeAttrReturn = sF.st_mode;
-  }
-
-  return iRval; // zero on success
-}
-
 int WBGetDirectoryListFileStat(const void *pDirectoryList, const char *szFileName,
                                unsigned long *pdwModeAttrReturn)
 {
@@ -2828,45 +3611,4 @@ int iRval;
 
   return iRval;
 }
-
-unsigned long long WBGetFileModDateTime(const char *szFileName)
-{
-int iRval;
-struct stat sF;
-
-
-  iRval = stat(szFileName, &sF);
-
-  if(iRval)
-  {
-    return (unsigned long long)((long long)-1);
-  }
-
-  // TODO:  see whether st_mtime or st_ctime is larger, in case of total screwup by something else
-
-  return sF.st_mtime; // mod time (as UNIX time_t value)
-}
-
-int WBCheckFileModDateTime(const char *szFileName, unsigned long long tVal)
-{
-unsigned long long tNewVal;
-
-
-  tNewVal = WBGetFileModDateTime(szFileName);
-
-  if(tNewVal == (unsigned long long)((unsigned long)-1)
-     || tNewVal > tVal)
-  {
-    return 1;
-  }
-  else if(tNewVal < tVal)
-  {
-    return -1;
-  }
-  else
-  {
-    return 0;
-  }
-}
-
 
