@@ -25,7 +25,6 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
-//#include <math.h>
 #ifdef WIN32
 #include <io.h>
 #include <tchar.h>
@@ -102,9 +101,11 @@ static WB_TIME epoch_time = 25568; // 1900-based date offset from epoch
 WB_TIME WBGetSystemTime(void)
 {
 #if defined(WIN32)
+
 #ifdef _USE_32BIT_TIME_T /* see time.h */
 #error you must not use 32-bit time_t value, use 64-bit only
 #endif // _USE_32BIT_TIME_T
+
 SYSTEMTIME st;
 int64_t l1;
 int n_years;
@@ -150,12 +151,16 @@ long adjustment;
 
    return (WB_TIME)l1;
 #elif __SIZEOF_LONG__ <= 4 // !WIN32, 32-bit time_t
+
 #ifndef NO_DEBUG
 #warning 32-bit time_t is only valid until 2038 - use 64-bit OS to avoid Y2K38
+#warning rewrite this to avoid Y2K38, by getting year, month, day etc. and converting like for WIN32
 #endif
 //
 // TODO - rewrite this to avoid Y2K38, by getting year, month, day etc. and converting like for WIN32
 struct timeval tv;
+
+  // 32-bit time_t - rewrite this to avoid Y2K38, by getting year, month, day etc. and converting like for WIN32
 
   gettimeofday(&tv, NULL); // for now, just use this.
 
@@ -252,7 +257,7 @@ void WBDelay(uint32_t uiDelay)  // approximate delay for specified period (in mi
   else
     Sleep(uiDelay / 1000);
 #else // WIN32
-//#ifdef HAVE_NANOSLEEP
+#ifdef HAVE_NANOSLEEP
 struct timespec tsp;
 
   if(WB_UNLIKELY(uiDelay >= 1000000L))
@@ -265,15 +270,14 @@ struct timespec tsp;
     tsp.tv_sec = 0; // it's assumed that this method is slightly faster
   }
 
-  tsp.tv_sec = 0;
   tsp.tv_nsec = uiDelay * 1000;  // wait for .1 msec
 
   nanosleep(&tsp, NULL);
-//#else  // HAVE_NANOSLEEP
-//
-//  usleep(uiDelay);  // 100 microsecs - a POSIX alternative to 'nanosleep'
-//
-//#endif // HAVE_NANOSLEEP
+#else  // HAVE_NANOSLEEP
+
+  usleep(uiDelay);  // 100 microsecs - a POSIX alternative to 'nanosleep'
+
+#endif // HAVE_NANOSLEEP
 #endif // WIN32
 }
 
@@ -665,7 +669,7 @@ union
   WB_UINT64 ullTime;
   unsigned short sA[4];
 } uX;
-static const char szH[16]="0123456789ABCDEF";
+static const char szH[17]="0123456789ABCDEF";
 
 
 #ifdef WIN32

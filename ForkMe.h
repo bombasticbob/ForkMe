@@ -59,7 +59,7 @@
 
 #ifndef WIN32 // WIN32 compat stuff
 
-/** \brief process ID abastraction
+/** \brief process ID abstraction
 **/
 #define WB_PROCESS_ID pid_t
 
