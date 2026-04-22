@@ -9,7 +9,7 @@
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 //                                                                          //
-//          Copyright (c) 2019 by S.F.T. Inc. - All rights reserved         //
+//       Copyright (c) 2019-2026 by S.F.T. Inc. - All rights reserved       //
 //  Use, copying, and distribution of this software are licensed according  //
 //    to the GPLv2, LGPLv2, or BSD license, as appropriate (see COPYING)    //
 //                                                                          //

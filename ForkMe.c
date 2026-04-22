@@ -9,7 +9,7 @@
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 //                                                                          //
-//          Copyright (c) 2019 by S.F.T. Inc. - All rights reserved         //
+//       Copyright (c) 2019-2026 by S.F.T. Inc. - All rights reserved       //
 //  Use, copying, and distribution of this software are licensed according  //
 //    to the GPLv2, LGPLv2, or BSD license, as appropriate (see COPYING)    //
 //                                                                          //
@@ -1747,7 +1747,7 @@ struct __RunResult3_worker_thread_params xParams = {{INVALID_HANDLE_VALUE,INVALI
 
   // start worker thread
   xParams.hThread = (HANDLE)_beginthreadex(NULL, 65536, __RunResult3_worker_thread,
-                                           &xParams, 0,//CREATE_SUSPENDED,
+                                           &xParams, CREATE_SUSPENDED,
                                            (unsigned int *)&xParams.dwThreadID);
 
   if(xParams.hThread == INVALID_HANDLE_VALUE)
@@ -1760,7 +1760,10 @@ struct __RunResult3_worker_thread_params xParams = {{INVALID_HANDLE_VALUE,INVALI
   xParams.pStdin = pStdin;
   xParams.cbStdin = cbStdin;
 
-  //ResumeThread(xParams.hThread);
+  ResumeThread(xParams.hThread);
+
+  while(xParams.dwThreadID && xParams.bStateFlag == 0)
+    Sleep(10); // wait for it to begin (avoid race condition if program does not start)
 
   pRval = WBRunResultInternal(xParams.hStdin[0], &nExitCode, szAppName, va);
 
