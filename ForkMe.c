@@ -857,7 +857,7 @@ WB_FILE_HANDLE hIn, hOut, hErr;
       sa.bInheritHandle = TRUE; // what a pain
 
       hIn = CreateFile("NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                       &sa, OPEN_EXISTING, 0, NULL);
+                       &sa, OPEN_EXISTING, NULL, NULL);
       WBFree(pSD);
     }
 #endif // WIN32
